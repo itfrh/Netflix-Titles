@@ -1,0 +1,116 @@
+package nca;
+
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.Mapper;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+public class ncaMapper extends Mapper<LongWritable, Text, Text, IntWritable> {
+
+    private static final IntWritable ONE = new IntWritable(1);
+    private final Text outKey = new Text();
+
+    // Method to split CSV while handling commas inside quotes
+    private static List<String> splitCsv(String line) {
+        List<String> fields = new ArrayList<>();
+        StringBuilder sb = new StringBuilder();
+        boolean inQuotes = false;
+
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                inQuotes = !inQuotes;
+            } else if (c == ',' && !inQuotes) {
+                fields.add(sb.toString().trim());
+                sb.setLength(0);
+            } else {
+                sb.append(c);
+            }
+        }
+        fields.add(sb.toString().trim());
+        return fields;
+    }
+
+    // Method to clean and standardize input
+    private static String clean(String s) {
+        if (s == null) return "Unknown";
+        s = s.trim();
+        if (s.isEmpty() || s.equalsIgnoreCase("null")) return "Unknown";
+        if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s.isEmpty() ? "Unknown" : s;
+    }
+
+    // Method to extract the year from the date added string
+    private static String extractYearAdded(String dateAdded) {
+        dateAdded = clean(dateAdded);
+        if ("Unknown".equals(dateAdded)) return "Unknown";
+        if (dateAdded.length() >= 4) {
+            String y = dateAdded.substring(dateAdded.length() - 4);
+            if (y.matches("\\d{4}")) return y;
+        }
+        return "Unknown";
+    }
+
+    @Override
+    protected void map(LongWritable key, Text value, Context context) throws IOException, InterruptedException {
+        String line = value.toString();
+        if (line == null || line.trim().isEmpty()) return;
+
+        // Skip the header
+        String lower = line.toLowerCase();
+        if (lower.startsWith("show_id,type,title")) return;
+
+        List<String> parts = splitCsv(line);
+        if (parts.size() < 12) return;
+
+        // Parse necessary fields
+        String type = clean(parts.get(1)); // Movie / TV Show
+        String country = clean(parts.get(5)); // may be multiple countries
+        String dateAdded = clean(parts.get(6));
+        String rating = clean(parts.get(8));
+        String listedIn = clean(parts.get(10)); // genres
+
+        // 1) Type distribution (Movie / TV Show)
+        outKey.set("TYPE|" + type);
+        context.write(outKey, ONE);
+
+        // 2) Rating distribution
+        outKey.set("RATING|" + rating);
+        context.write(outKey, ONE);
+
+        // 3) Year added distribution
+        String yearAdded = extractYearAdded(dateAdded);
+        outKey.set("YEAR_ADDED|" + yearAdded);
+        context.write(outKey, ONE);
+
+        // 4) Country distribution (split multiple countries)
+        if (!"Unknown".equals(country)) {
+            String[] cArr = country.split("\\s*,\\s*");
+            for (String c : cArr) {
+                outKey.set("COUNTRY|" + clean(c));
+                context.write(outKey, ONE);
+            }
+        } else {
+            outKey.set("COUNTRY|Unknown");
+            context.write(outKey, ONE);
+        }
+
+        // 5) Genre distribution (split multiple genres)
+        if (!"Unknown".equals(listedIn)) {
+            String[] gArr = listedIn.split("\\s*,\\s*");
+            for (String g : gArr) {
+                outKey.set("GENRE|" + clean(g));
+                context.write(outKey, ONE);
+            }
+        } else {
+            outKey.set("GENRE|Unknown");
+            context.write(outKey, ONE);
+        }
+    }
+}
